@@ -1,0 +1,12 @@
+{
+  "ConnectionStrings": {
+    "Default": "Server=;Port=;Database=;User Id=;Password=;SslMode=None"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
