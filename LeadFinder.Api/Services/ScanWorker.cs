@@ -1,5 +1,6 @@
 using LeadFinder.Api.Data;
 using LeadFinder.Api.Data.Entities;
+using LeadFinder.Api.Services.Discovery;
 using LeadFinder.Api.Services.Queue;
 using LeadFinder.Api.Services.SiteAudit;
 using Microsoft.EntityFrameworkCore;
@@ -9,6 +10,7 @@ namespace LeadFinder.Api.Services;
 public sealed class ScanWorker(
     IBackgroundQueue queue,
     ISiteAuditService audit,
+    IDiscoveryService discoveryService,
     IDbContextFactory<AppDbContext> dbFactory,
     ILogger<ScanWorker> logger) : BackgroundService
 {
@@ -43,7 +45,23 @@ public sealed class ScanWorker(
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (urls.Count == 0) return;
+        if (urls.Count == 0)
+        {
+            var discovered = await discoveryService.DiscoverAsync(req.City, req.Keyword, ct);
+            urls = discovered
+                .Where(x => !string.IsNullOrWhiteSpace(x.WebsiteUrl))
+                .Select(x => x.WebsiteUrl!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            
+            logger.LogInformation("Discovered {Count} candidate sites for {City}/{Keyword}", urls.Count, req.City, req.Keyword);
+        }
+        
+        if (urls.Count == 0)
+        {
+            logger.LogInformation("No URLs found or discovered for {City}/{Keyword}", req.City, req.Keyword);
+            return;
+        }
 
         foreach (var raw in urls)
         {
