@@ -79,10 +79,19 @@ public sealed class SiteAuditService(IHttpClientFactory httpClientFactory, ILogg
             if (string.IsNullOrEmpty(h)) return;
 
             foreach (Match m in SiteAuditRegex.Email.Matches(h))
-                emails.Add(m.Value);
+            {
+                var email = m.Value.Trim();
+                if (IsValidEmail(email) && !emails.Contains(email, StringComparer.OrdinalIgnoreCase))
+                    emails.Add(email);
+            }
 
             foreach (Match m in SiteAuditRegex.Phone.Matches(h))
-                phones.Add(Regex.Replace(m.Value, @"\s+", " ").Trim());
+            {
+                var phone = Regex.Replace(m.Value, @"\s+", " ").Trim();
+                var normalized = NormalizePhone(phone);
+                if (normalized != null && !phones.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+                    phones.Add(normalized);
+            }
         }
 
         // a) Ana sayfayı tara

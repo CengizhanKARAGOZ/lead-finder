@@ -6,5 +6,7 @@ public class Website
     public long? BusinessId { get; set; }
     public string Domain { get; set; } = "";
     public string HomepageUrl { get; set; } = "";
+    public string? EmailsCsv { get; set; }
+    public string? PhonesCsv { get; set; }
     public Business? Business { get; set; }
 }

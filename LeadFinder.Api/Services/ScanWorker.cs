@@ -45,23 +45,29 @@ public sealed class ScanWorker(
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        List<DiscoveryCandidate> discovered = new();
         if (urls.Count == 0)
         {
-            var discovered = await discoveryService.DiscoverAsync(req.City, req.Keyword, ct);
+            discovered = (await discoveryService.DiscoverAsync(req.City, req.Keyword, ct)).ToList();
             urls = discovered
                 .Where(x => !string.IsNullOrWhiteSpace(x.WebsiteUrl))
                 .Select(x => x.WebsiteUrl!)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            
+
             logger.LogInformation("Discovered {Count} candidate sites for {City}/{Keyword}", urls.Count, req.City, req.Keyword);
         }
-        
+
         if (urls.Count == 0)
         {
             logger.LogInformation("No URLs found or discovered for {City}/{Keyword}", req.City, req.Keyword);
             return;
         }
+
+        // Create a lookup for discovery candidates by URL
+        var candidateByUrl = discovered
+            .Where(c => !string.IsNullOrWhiteSpace(c.WebsiteUrl))
+            .ToDictionary(c => c.WebsiteUrl!, StringComparer.OrdinalIgnoreCase);
 
         foreach (var raw in urls)
         {
@@ -78,11 +84,14 @@ public sealed class ScanWorker(
                 continue;
             }
 
-            await UpsertAsync(req, auditResult, ct);
+            // Get discovery info if available
+            candidateByUrl.TryGetValue(raw, out var candidate);
+
+            await UpsertAsync(req, auditResult, candidate, ct);
         }
     }
 
-    private async Task UpsertAsync(ScanRequest req, SiteAuditResult ar, CancellationToken ct)
+    private async Task UpsertAsync(ScanRequest req, SiteAuditResult ar, DiscoveryCandidate? candidate, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
 
@@ -92,7 +101,8 @@ public sealed class ScanWorker(
 
         if (website is null)
         {
-            var businessName = !string.IsNullOrWhiteSpace(ar.Title) ? ar.Title! : ar.Host;
+            // Use candidate name if available, otherwise use title or host
+            var businessName = candidate?.Name ?? (!string.IsNullOrWhiteSpace(ar.Title) ? ar.Title! : ar.Host);
             var business = await db.Businesses
                 .FirstOrDefaultAsync(b => b.Name == businessName && b.City == req.City, ct);
 
@@ -102,16 +112,33 @@ public sealed class ScanWorker(
                 {
                     Name = businessName,
                     City = req.City,
-                    Keyword = req.Keyword
+                    Keyword = req.Keyword,
+                    Address = candidate?.Address,
+                    Phone = candidate?.Phones.FirstOrDefault(),
+                    Email = ar.Emails.FirstOrDefault()
                 };
                 db.Businesses.Add(business);
+                // Save to get the Business.Id
+                await db.SaveChangesAsync(ct);
+            }
+            else
+            {
+                // Update business contact info if not set
+                if (string.IsNullOrWhiteSpace(business.Address) && !string.IsNullOrWhiteSpace(candidate?.Address))
+                    business.Address = candidate.Address;
+                if (string.IsNullOrWhiteSpace(business.Phone) && candidate?.Phones.Count > 0)
+                    business.Phone = candidate.Phones.First();
+                if (string.IsNullOrWhiteSpace(business.Email) && ar.Emails.Count > 0)
+                    business.Email = ar.Emails.First();
             }
 
             website = new Website
             {
                 Domain = ar.Host,
                 HomepageUrl = ar.FinalUrl,
-                BusinessId = business.Id
+                Business = business,  // Use navigation property instead of BusinessId
+                EmailsCsv = ar.Emails.Count > 0 ? string.Join(",", ar.Emails) : null,
+                PhonesCsv = ar.Phones.Count > 0 ? string.Join(",", ar.Phones) : null
             };
             db.Websites.Add(website);
 
@@ -119,8 +146,26 @@ public sealed class ScanWorker(
         }
         else
         {
+            // Update existing website
             if (website.HomepageUrl != ar.FinalUrl)
                 website.HomepageUrl = ar.FinalUrl;
+
+            // Update contact info from audit
+            if (ar.Emails.Count > 0)
+                website.EmailsCsv = string.Join(",", ar.Emails);
+            if (ar.Phones.Count > 0)
+                website.PhonesCsv = string.Join(",", ar.Phones);
+
+            // Update business contact info if available
+            if (website.Business is not null)
+            {
+                if (string.IsNullOrWhiteSpace(website.Business.Address) && !string.IsNullOrWhiteSpace(candidate?.Address))
+                    website.Business.Address = candidate.Address;
+                if (string.IsNullOrWhiteSpace(website.Business.Phone) && candidate?.Phones.Count > 0)
+                    website.Business.Phone = candidate.Phones.First();
+                if (string.IsNullOrWhiteSpace(website.Business.Email) && ar.Emails.Count > 0)
+                    website.Business.Email = ar.Emails.First();
+            }
         }
 
         var leadScore = new LeadScore

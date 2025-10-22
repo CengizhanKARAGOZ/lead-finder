@@ -56,9 +56,14 @@ public static class ResultEndpoints
                     Business = x.b.Name,
                     City = x.b.City,
                     Keyword = x.b.Keyword,
+                    Address = x.b.Address,
+                    Phone = x.b.Phone,
+                    Email = x.b.Email,
                     WebsiteId = x.w.Id,
                     Domain = x.w.Domain,
                     HomepageUrl = x.w.HomepageUrl,
+                    Emails = x.w.EmailsCsv,
+                    Phones = x.w.PhonesCsv,
                     Score = score,
                     Quality = quality,
                     ReasonsJson = ls?.ReasonsJson,
@@ -102,10 +107,15 @@ public static class ResultEndpoints
         public string Business { get; set; } = default!;
         public string? City { get; set; }
         public string? Keyword { get; set; }
+        public string? Address { get; set; }
+        public string? Phone { get; set; }
+        public string? Email { get; set; }
 
         public long WebsiteId { get; set; }
         public string Domain { get; set; } = default!;
         public string? HomepageUrl { get; set; }
+        public string? Emails { get; set; }
+        public string? Phones { get; set; }
 
         public int? Score { get; set; }
         public string Quality { get; set; } = "Unknown"; // "Poor" | "Ok" | "Unknown"

@@ -39,6 +39,9 @@ public sealed class OsmpPlacesProvider(IHttpClientFactory httpFactory, ILogger<O
         var results = new List<PlaceResult>(elements.Count);
         var kwLower = (keyword ?? "").ToLowerInvariant();
 
+        logger.LogInformation("Processing {Count} OSM elements. Filters: shop={ShopCount}, amenity={AmenityCount}, craft={CraftCount}",
+            elements.Count, filters.ShopValues.Count, filters.AmenityValues.Count, filters.CraftValues.Count);
+
         foreach (var e in elements)
         {
             var tags = e.Tags ?? new Dictionary<string, string>();
@@ -48,10 +51,39 @@ public sealed class OsmpPlacesProvider(IHttpClientFactory httpFactory, ILogger<O
                 : tags.TryGetValue("operator", out var op) ? op
                 : "";
 
-            // Alakasızları ele: kategori eşleşmiyorsa ve isimde keyword yoksa at
-            if (!MatchesCategory(tags, filters) &&
-                !name.ToLowerInvariant().Contains(kwLower))
+            var nameLower = name.ToLowerInvariant();
+            var description = Tag(tags, "description")?.ToLowerInvariant() ?? "";
+
+            // Gevşek filtreleme: Kategori eşleşmeli VEYA isim/açıklamada keyword olmalı
+            var categoryMatch = MatchesCategory(tags, filters);
+            var nameMatch = !string.IsNullOrWhiteSpace(name) && (nameLower.Contains(kwLower) || description.Contains(kwLower));
+
+            // Kategori filtresi varsa ve eşleşiyorsa direkt ekle
+            if (categoryMatch)
+            {
+                // OK, kategori eşleşti
+            }
+            // Kategori filtresi yoksa ve isim eşleşiyorsa ekle
+            else if (filters.ShopValues.Count == 0 && filters.AmenityValues.Count == 0 && filters.CraftValues.Count == 0 && nameMatch)
+            {
+                // OK, kategori filtresi yok, isim eşleşti
+            }
+            // Kategori filtresi var ama eşleşmedi, isim eşleşmeli ve genel kategori olmamalı
+            else if (nameMatch)
+            {
+                var genericCategories = new[] { "cafe", "restaurant", "fast_food", "bar", "pub", "bank", "atm" };
+                if (tags.TryGetValue("amenity", out var amenity) && genericCategories.Contains(amenity))
+                {
+                    logger.LogDebug("Skipping generic category: {Name} (amenity={Amenity})", name, amenity);
+                    continue;
+                }
+                // İsim eşleşti ve genel kategori değil, ekle
+            }
+            else
+            {
+                // Hiçbir şey eşleşmedi
                 continue;
+            }
 
             string? website = GetFirstNonEmpty(
                 Tag(tags, "website"),
@@ -74,6 +106,7 @@ public sealed class OsmpPlacesProvider(IHttpClientFactory httpFactory, ILogger<O
             });
         }
 
+        logger.LogInformation("Filtered down to {ResultCount} results from {ElementCount} elements", results.Count, elements.Count);
         return results;
     }
 
@@ -251,8 +284,15 @@ public sealed class OsmpPlacesProvider(IHttpClientFactory httpFactory, ILogger<O
             if (postResp.IsSuccessStatusCode)
             {
                 var json = await postResp.Content.ReadAsStringAsync(token);
-                var payload = JsonSerializer.Deserialize<OverpassResponse>(json, JsonOpts);
-                if (payload?.Elements is { Count: > 0 }) return payload.Elements;
+                try
+                {
+                    var payload = JsonSerializer.Deserialize<OverpassResponse>(json, JsonOpts);
+                    if (payload?.Elements is { Count: > 0 }) return payload.Elements;
+                }
+                catch (JsonException jex)
+                {
+                    logger.LogWarning(jex, "Overpass POST JSON parse error at {Ep}", ep);
+                }
             }
             else
             {
@@ -276,8 +316,15 @@ public sealed class OsmpPlacesProvider(IHttpClientFactory httpFactory, ILogger<O
             if (getResp.IsSuccessStatusCode)
             {
                 var json = await getResp.Content.ReadAsStringAsync(token);
-                var payload = JsonSerializer.Deserialize<OverpassResponse>(json, JsonOpts);
-                if (payload?.Elements is { Count: > 0 }) return payload.Elements;
+                try
+                {
+                    var payload = JsonSerializer.Deserialize<OverpassResponse>(json, JsonOpts);
+                    if (payload?.Elements is { Count: > 0 }) return payload.Elements;
+                }
+                catch (JsonException jex)
+                {
+                    logger.LogWarning(jex, "Overpass GET JSON parse error at {Ep}", ep);
+                }
             }
             else
             {

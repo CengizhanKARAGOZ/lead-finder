@@ -24,7 +24,7 @@ builder.Services.AddHttpClient();
 builder.Services.AddSingleton<IBackgroundQueue, BackgroundQueue>();
 builder.Services.AddSingleton<ISiteAuditService, SiteAuditService>();
 builder.Services.AddSingleton<IDiscoveryService, DiscoveryService>();
-builder.Services.AddSingleton<IWebSearchProvider, DummyWebSearchProvider>();
+builder.Services.AddSingleton<IWebSearchProvider, DuckDuckGoWebSearchProvider>();
 builder.Services.AddSingleton<IPlacesProvider, OsmpPlacesProvider>();
 builder.Services.AddHostedService<ScanWorker>();
 
@@ -35,5 +35,6 @@ app.UseStaticFiles();
 
 app.MapScanEndpoints();
 app.MapResultEndpoints();
+app.MapCleanupEndpoints();
 
 app.Run();
