@@ -11,72 +11,84 @@ public sealed class SiteAuditService(IHttpClientFactory httpClientFactory, ILogg
     {
         var normalized = NormalizeUrl(inputUrl);
         if (normalized is null)
-            throw new ArgumentNullException("The URL is empty or invalid.",nameof(inputUrl));
-        
+            throw new ArgumentNullException(nameof(inputUrl), "URL boş veya geçersiz.");
+
         var http = httpClientFactory.CreateClient();
         http.Timeout = TimeSpan.FromSeconds(12);
         http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("LeadFinder", "1.0"));
-        
+
         string finalUrl = normalized;
-        string host = GetHostOrUnknown(finalUrl);
-        string? html = null;
+        string host     = GetHostOrUnknown(finalUrl);
+        string? html    = null;
 
         try
         {
             using var resp = await http.GetAsync(finalUrl, ct);
-            finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? finalUrl;
-            host = GetHostOrUnknown(finalUrl);
+            finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? finalUrl; // redirect sonrası gerçek URL
+            host     = GetHostOrUnknown(finalUrl);
 
             if (resp.IsSuccessStatusCode && IsTextHtml(resp))
                 html = await resp.Content.ReadAsStringAsync(ct);
         }
-        catch (Exception e)
+        catch (Exception ex)
         {
-            logger.LogWarning(e, "Homepage request failed: {Url}", finalUrl);
+            logger.LogWarning(ex, "Ana sayfa isteği başarısız: {Url}", finalUrl);
         }
-        
-        var isHttps = finalUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
-        var title = TryGetTitle(html);
+
+        var isHttps     = finalUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+        var title       = TryGetTitle(html);
         var hasViewport = html is not null && SiteAuditRegex.Viewport.IsMatch(html);
-        
+
         var (hasContact, emails, phones) = await FindContactsAsync(http, finalUrl, html, ct);
-        var (score, notes) = ScoreFromSignals(isHttps, title, hasViewport, hasContact, emails, phones);
+        var (score, notes)               = ScoreFromSignals(isHttps, title, hasViewport, hasContact, emails, phones);
+
+        // Telefonları normalize et, null ve tekrarları at
+        var normPhones = phones
+            .Select(NormalizePhone)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Distinct(StringComparer.Ordinal)
+            .Take(20)
+            .ToList()!;
 
         return new SiteAuditResult
         {
-            InputUrl = inputUrl,
-            FinalUrl = finalUrl,
-            Host = host,
-            IsHttps = isHttps,
-            Title = title,
+            InputUrl        = inputUrl,
+            FinalUrl        = finalUrl,
+            Host            = host,
+            IsHttps         = isHttps,
+            Title           = title,
             HasViewPortMeta = hasViewport,
-            HasContactPage = hasContact,
-            Emails = emails.Distinct(StringComparer.OrdinalIgnoreCase).Take(20).ToList(),
-            Phones = phones.Select(NormalizePhone).Where(p => p is not null)!.Distinct()!.Take(20)!.ToList()!,
-            Score = score,
-            Notes = notes,
-            HtmlLength = html?.Length
+            HasContactPage  = hasContact,
+            Emails          = emails.Distinct(StringComparer.OrdinalIgnoreCase).Take(20).ToList(),
+            Phones          = normPhones,
+            Score           = score,
+            Notes           = notes,
+            HtmlLength      = html?.Length
         };
     }
-    
+
     private async Task<(bool hasContact, List<string> emails, List<string> phones)>
         FindContactsAsync(HttpClient http, string baseUrl, string? html, CancellationToken ct)
     {
-        var emails = new List<string>();
-        var phones = new List<string>();
+        var emails    = new List<string>();
+        var phones    = new List<string>();
         var hasContact = false;
 
         void scan(string? h)
         {
             if (string.IsNullOrEmpty(h)) return;
-            foreach (Match m in SiteAuditRegex.Email.Matches(h)) emails.Add(m.Value);
-            foreach (Match m in SiteAuditRegex.Phone.Matches(h)) phones.Add(Regex.Replace(m.Value, @"\s+", " ").Trim());
+
+            foreach (Match m in SiteAuditRegex.Email.Matches(h))
+                emails.Add(m.Value);
+
+            foreach (Match m in SiteAuditRegex.Phone.Matches(h))
+                phones.Add(Regex.Replace(m.Value, @"\s+", " ").Trim());
         }
 
-        // a) Scan the homepage
+        // a) Ana sayfayı tara
         scan(html);
 
-        // b) Collect links that appear as contact/iletisim within <a href>
+        // b) <a> içindeki /contact /iletisim link adaylarını topla
         var candidates = new List<string>();
         if (!string.IsNullOrEmpty(html))
         {
@@ -89,14 +101,14 @@ public sealed class SiteAuditService(IHttpClientFactory httpClientFactory, ILogg
             }
         }
 
-        // c) Heuristic methods
+        // c) Heuristik ek yollar
         var baseUri = new Uri(baseUrl);
         candidates.Add(new Uri(baseUri, "/contact").ToString());
         candidates.Add(new Uri(baseUri, "/iletisim").ToString());
         candidates.Add(new Uri(baseUri, "/contact-us").ToString());
         candidates.Add(new Uri(baseUri, "/bize-ulasin").ToString());
 
-        // Uniq + upper limit
+        // Uniq + limit
         candidates = candidates.Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList();
 
         foreach (var u in candidates)
@@ -104,22 +116,23 @@ public sealed class SiteAuditService(IHttpClientFactory httpClientFactory, ILogg
             try
             {
                 using var resp = await http.GetAsync(u, ct);
-                if (!resp.IsSuccessStatusCode || !IsTextHtml(resp)) continue;
+                if (!resp.IsSuccessStatusCode || !IsTextHtml(resp))
+                    continue;
 
                 var sub = await resp.Content.ReadAsStringAsync(ct);
                 scan(sub);
 
-                // Communication page signal
+                // iletişim sayfası sinyali
                 if (SiteAuditRegex.Email.IsMatch(sub) || sub.Contains("tel:", StringComparison.OrdinalIgnoreCase))
                     hasContact = true;
             }
             catch (Exception ex)
             {
-                logger.LogDebug(ex, "The contact page could not be read: {Url}", u);
+                logger.LogDebug(ex, "İletişim sayfası okunamadı: {Url}", u);
             }
         }
 
-        // d) If there is an open signal on the main page
+        // d) Ana sayfada açık sinyal var mı
         if (!hasContact && html is not null)
         {
             hasContact = html.Contains("mailto:", StringComparison.OrdinalIgnoreCase)
@@ -138,15 +151,13 @@ public sealed class SiteAuditService(IHttpClientFactory httpClientFactory, ILogg
         var score = 0;
         var notes = new List<string>();
 
-        if (isHttps)                      { score += 10; notes.Add("HTTPS detected (+10)"); }
+        if (isHttps)                       { score += 10; notes.Add("HTTPS detected (+10)"); }
         if (!string.IsNullOrWhiteSpace(title)) { score += 5;  notes.Add("Title detected (+5)"); }
-        if (hasViewport)                  { score += 3;  notes.Add("Meta viewport detected (+3)"); }
-        if (hasContact)                   { score += 10; notes.Add("İletişim sayfası/sinyali detected (+10)"); }
-        if (emails.Count > 0)             { score += 4;  notes.Add("E-posta detected (+4)"); }
-        if (phones.Count > 0)             { score += 3;  notes.Add("Telefon detected (+3)"); }
+        if (hasViewport)                   { score += 3;  notes.Add("Meta viewport detected (+3)"); }
+        if (hasContact)                    { score += 10; notes.Add("İletişim sayfası/sinyali detected (+10)"); }
+        if (emails.Count > 0)              { score += 4;  notes.Add("E-posta detected (+4)"); }
+        if (phones.Count > 0)              { score += 3;  notes.Add("Tel detected (+3)"); }
 
         return (Math.Clamp(score, 0, 100), notes);
     }
-    
-    
 }

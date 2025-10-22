@@ -87,7 +87,7 @@ public sealed class ScanWorker(
         await using var db = await dbFactory.CreateDbContextAsync(ct);
 
         var website = await db.Websites
-            .Include(w => w.BusinessId)
+            .Include(w => w.Business)
             .FirstOrDefaultAsync(w => w.Domain == ar.Host || w.HomepageUrl == ar.FinalUrl, ct);
 
         if (website is null)

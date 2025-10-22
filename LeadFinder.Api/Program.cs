@@ -10,8 +10,17 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var conn = builder.Configuration.GetConnectionString("Default");
+if (string.IsNullOrWhiteSpace(conn))
+    throw new InvalidOperationException("ConnectionStrings:Default missing.");
+
+builder.Services.AddDbContextFactory<AppDbContext>(opt =>
+{
+    opt.UseMySql(conn, ServerVersion.AutoDetect(conn));
+});
+
 builder.Services.AddHttpClient();
-builder.Services.AddDbContextFactory<AppDbContext>();
+
 builder.Services.AddSingleton<IBackgroundQueue, BackgroundQueue>();
 builder.Services.AddSingleton<ISiteAuditService, SiteAuditService>();
 builder.Services.AddSingleton<IDiscoveryService, DiscoveryService>();
@@ -25,5 +34,6 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 app.MapScanEndpoints();
+app.MapResultEndpoints();
 
 app.Run();
